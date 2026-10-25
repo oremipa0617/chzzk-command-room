@@ -242,6 +242,7 @@ const $ = s => document.querySelector(s);
 const el = (tag, attrs={}, ...kids) => {
   const e = document.createElement(tag);
   for(const [k,v] of Object.entries(attrs)){
+    if(v==null || v===false) continue;
     if(k==='class') e.className=v; else if(k.startsWith('on')) e.addEventListener(k.slice(2), v);
     else if(k==='html') e.innerHTML=v; else e.setAttribute(k,v);
   }
@@ -570,7 +571,7 @@ async function doSearch(){
         el('img',{src:ch.channelImageUrl||'', referrerpolicy:'no-referrer'}),
         el('span',{class:'on'+(ch.openLive?' live':''), title: ch.openLive?'방송 중':'오프라인'}),
         el('div',{class:'name'}, ch.channelName + (ch.verified?' ✔':''), el('small',{}, ch.followerCount!=null ? `팔로워 ${ch.followerCount.toLocaleString()}` : ch.channelId)),
-        el('button',{class: has?'':'primary', disabled: has?'':null, onclick:(e)=>{ addChannel(ch); e.target.textContent='추가됨'; e.target.disabled=true; e.target.classList.remove('primary'); }}, has?'추가됨':'+ 추가')));
+        el('button',{class: has?'':'primary', disabled: has?'':null, onclick:(e)=>{ const b=e.currentTarget; addChannel(ch); b.textContent='추가됨'; b.disabled=true; b.classList.remove('primary'); if(pickerTarget!=null){ assignPane(pickerTarget, ch.channelId); closeModal('libModal'); } }}, has?'추가됨':'+ 추가')));
     });
   }catch(e){ res.innerHTML=''; res.append(el('div',{class:'empty-note'}, '검색 실패: '+e.message)); }
 }
