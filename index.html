@@ -1,0 +1,683 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#0f0f12">
+<title>치지직 멀티뷰</title>
+<script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.15/dist/hls.min.js"></script>
+<style>
+  :root{
+    --bg:#0f0f12;--panel:#17171c;--line:#2a2a33;--text:#e8e8ee;--sub:#9a9aa8;
+    --accent:#00ffa3;--danger:#ff5a5a;--dim:.3;
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{height:100%;margin:0;background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,"Segoe UI",Roboto,"Noto Sans KR",sans-serif;overscroll-behavior:none}
+  body{display:flex;flex-direction:column}
+  button{font:inherit;color:inherit;cursor:pointer;border:1px solid var(--line);background:#222229;border-radius:8px;padding:6px 10px}
+  button:hover{background:#2b2b34}
+  button.primary{background:var(--accent);color:#000;border-color:var(--accent);font-weight:600}
+  button.danger{background:#3a1d1d;border-color:#5a2a2a;color:#ffb3b3}
+  input[type=text],input[type=url],textarea{font:inherit;color:inherit;background:#101014;border:1px solid var(--line);border-radius:8px;padding:8px 10px;width:100%}
+  input[type=range]{width:100%;accent-color:var(--accent)}
+
+  /* 상단 바 */
+  header{display:flex;align-items:center;gap:8px;padding:8px 10px;background:var(--panel);border-bottom:1px solid var(--line);flex-wrap:wrap;padding-top:calc(8px + env(safe-area-inset-top))}
+  header .logo{font-weight:700;color:var(--accent);margin-right:4px;white-space:nowrap}
+  .layouts{display:flex;gap:4px;flex-wrap:wrap}
+  .layouts button{padding:5px 9px;font-size:13px}
+  .layouts button.active{background:var(--accent);color:#000;border-color:var(--accent);font-weight:600}
+  header .spacer{flex:1}
+  header .status{font-size:12px;color:var(--sub);white-space:nowrap}
+  #unmuteBtn{display:none;background:#ffcc00;color:#000;border-color:#ffcc00;font-weight:600}
+
+  /* 그리드 */
+  main{flex:1;min-height:0;padding:4px}
+  #grid{height:100%;display:grid;gap:4px}
+  .pane{position:relative;background:#1c1c22;border-radius:8px;overflow:hidden;min-height:0;transition:opacity .25s,box-shadow .25s;user-select:none}
+  .pane.dimmed{opacity:var(--dim)}
+  .pane.focused{box-shadow:0 0 0 3px var(--accent) inset}
+  .pane video{width:100%;height:100%;object-fit:contain;background:#000;display:block}
+  .pane .tap{position:absolute;inset:0;cursor:pointer}
+  .pane.empty{display:flex;align-items:center;justify-content:center;cursor:pointer;background:#2a2a30}
+  .pane.empty .nosign{font-size:clamp(28px,6vw,72px);filter:grayscale(1);opacity:.5}
+  .pane.empty:hover{background:#33333a}
+  .pane .ctl{position:absolute;opacity:0;transition:opacity .15s;z-index:3;width:32px;height:32px;padding:0;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.6);border:1px solid rgba(255,255,255,.2);border-radius:8px;font-size:15px}
+  .pane:hover .ctl,.pane.show-ctl .ctl{opacity:1}
+  .pane .ctl.close{top:6px;right:6px;color:#fff}
+  .pane .ctl.close:hover{background:var(--danger)}
+  .pane .ctl.fs{left:6px;bottom:6px;color:#fff}
+  .pane .ctl.mute{left:44px;bottom:6px;color:#fff}
+  .pane .badge{position:absolute;left:6px;top:6px;z-index:2;font-size:11px;background:rgba(0,0,0,.6);padding:3px 7px;border-radius:6px;max-width:70%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;opacity:0;transition:opacity .15s;pointer-events:none}
+  .pane:hover .badge,.pane.show-ctl .badge{opacity:1}
+  .pane .badge .live{color:#ff4d4d;font-weight:700;margin-right:4px}
+  .pane .focusTag{position:absolute;right:6px;bottom:6px;z-index:2;font-size:11px;color:#000;background:var(--accent);padding:3px 7px;border-radius:6px;font-weight:700;display:none;pointer-events:none}
+  .pane.focused .focusTag{display:block}
+  .pane .msg{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;text-align:center;padding:12px;color:var(--sub);font-size:13px;background:#111;z-index:1}
+  .pane .msg img{width:40%;max-width:160px;border-radius:50%;opacity:.5}
+  .pane .msg b{color:var(--text);font-size:14px}
+  .pane .msg.hidden{display:none}
+  /* 유사 전체화면(iOS 등 Fullscreen API 미지원 시) */
+  .pane.pseudo-fs{position:fixed !important;inset:0;z-index:50;border-radius:0;opacity:1 !important;box-shadow:none}
+  @media (hover:none){ .pane .ctl,.pane .badge{opacity:1} }
+
+  /* 모달 */
+  .modal{position:fixed;inset:0;background:rgba(0,0,0,.65);display:none;align-items:center;justify-content:center;z-index:100;padding:12px}
+  .modal.open{display:flex}
+  .modal .box{background:var(--panel);border:1px solid var(--line);border-radius:14px;width:min(560px,100%);max-height:90vh;display:flex;flex-direction:column;overflow:hidden}
+  .modal .box h3{margin:0;padding:14px 16px;border-bottom:1px solid var(--line);font-size:16px;display:flex;align-items:center;justify-content:space-between}
+  .modal .box h3 button{padding:4px 8px}
+  .modal .body{padding:14px 16px;overflow:auto;display:flex;flex-direction:column;gap:12px}
+  .modal .foot{padding:12px 16px;border-top:1px solid var(--line);display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap}
+  .list{display:flex;flex-direction:column;gap:6px}
+  .row{display:flex;align-items:center;gap:10px;padding:8px;border:1px solid var(--line);border-radius:10px;background:#111115}
+  .row.clickable{cursor:pointer}
+  .row.clickable:hover{border-color:var(--accent)}
+  .row img{width:36px;height:36px;border-radius:50%;background:#333;object-fit:cover;flex:none}
+  .row .name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .row .name small{display:block;color:var(--sub);font-size:11px}
+  .row .on{width:8px;height:8px;border-radius:50%;background:#555;flex:none}
+  .row .on.live{background:#ff4d4d;box-shadow:0 0 6px #ff4d4d}
+  .row.selected{border-color:var(--danger);background:#2a1616}
+  .hint{font-size:12px;color:var(--sub);line-height:1.5}
+  .field label{display:block;font-size:13px;margin-bottom:4px;color:var(--sub)}
+  .field .val{float:right;color:var(--text)}
+  .tabs{display:flex;gap:6px}
+  .tabs button.active{background:var(--accent);color:#000;border-color:var(--accent)}
+  .sr{display:flex;gap:6px}
+  .empty-note{color:var(--sub);font-size:13px;text-align:center;padding:16px}
+  .toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:#222;border:1px solid var(--line);padding:10px 14px;border-radius:10px;font-size:13px;z-index:200;opacity:0;transition:opacity .2s;pointer-events:none;max-width:90vw}
+  .toast.show{opacity:1}
+</style>
+</head>
+<body>
+
+<header>
+  <span class="logo">CHZZK 멀티뷰</span>
+  <div class="layouts" id="layoutBtns"></div>
+  <span class="spacer"></span>
+  <button id="unmuteBtn" title="모바일은 첫 터치 후 소리 재생 가능">🔊 소리 켜기</button>
+  <span class="status" id="status"></span>
+  <button id="libBtn">📋 채널 목록</button>
+  <button id="settingsBtn">⚙️ 설정</button>
+</header>
+
+<main><div id="grid"></div></main>
+
+<!-- 채널 선택 / 목록 모달 -->
+<div class="modal" id="libModal">
+  <div class="box">
+    <h3><span id="libTitle">채널 목록</span><button data-close="libModal">✕</button></h3>
+    <div class="body">
+      <div class="tabs">
+        <button id="tabList" class="active">내 채널</button>
+        <button id="tabSearch">🔍 검색 / 추가</button>
+      </div>
+      <div id="libList" class="list"></div>
+      <div id="libSearch" style="display:none">
+        <div class="sr">
+          <input type="text" id="searchInput" placeholder="채널명 검색, 또는 치지직 채널 URL/ID 붙여넣기">
+          <button class="primary" id="searchBtn">검색</button>
+        </div>
+        <p class="hint" id="searchHint"></p>
+        <div class="list" id="searchResults"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 분할 축소 시 제거 선택 모달 -->
+<div class="modal" id="shrinkModal">
+  <div class="box">
+    <h3>어떤 화면을 닫을까요?</h3>
+    <div class="body">
+      <p class="hint" id="shrinkHint"></p>
+      <div class="list" id="shrinkList"></div>
+    </div>
+    <div class="foot">
+      <button id="shrinkCancel">취소</button>
+      <button class="primary" id="shrinkOk" disabled>적용</button>
+    </div>
+  </div>
+</div>
+
+<!-- 설정 모달 -->
+<div class="modal" id="settingsModal">
+  <div class="box">
+    <h3>설정<button data-close="settingsModal">✕</button></h3>
+    <div class="body">
+      <div class="field">
+        <label>전체 음량 <span class="val" id="masterVolVal"></span></label>
+        <input type="range" id="masterVol" min="0" max="100" step="1">
+      </div>
+      <div class="field">
+        <label>주목 모드: 나머지 화면 음량 비율 <span class="val" id="focusVolVal"></span></label>
+        <input type="range" id="focusVol" min="0" max="100" step="5">
+        <p class="hint">주목한 화면은 전체 음량 그대로, 나머지 화면은 전체 음량 × 이 비율로 재생됩니다. (0% = 음소거)</p>
+      </div>
+      <div class="field">
+        <label>주목 모드: 나머지 화면 밝기 <span class="val" id="dimVal"></span></label>
+        <input type="range" id="dim" min="5" max="90" step="5">
+      </div>
+      <div class="field">
+        <label>저지연(LLHLS) 스트림 우선 사용</label>
+        <label style="color:var(--text)"><input type="checkbox" id="preferLL"> 켜기 (끊기면 끄세요)</label>
+      </div>
+      <hr style="border:0;border-top:1px solid var(--line);width:100%">
+      <div class="field">
+        <label>중계 서버 주소 (Cloudflare Worker) — 채널 검색·재생에 필요</label>
+        <input type="url" id="workerUrl" placeholder="https://xxxx.xxxx.workers.dev">
+        <p class="hint">동봉된 worker.js 를 Cloudflare Workers(무료)에 배포한 뒤 주소를 입력하세요. 비어 있으면 검색/재생이 되지 않고 채널 목록 관리만 가능합니다.</p>
+      </div>
+      <hr style="border:0;border-top:1px solid var(--line);width:100%">
+      <div class="field">
+        <label>클라우드 동기화 (Firebase) — 기기 간 채널 목록·설정 공유</label>
+        <textarea id="fbConfig" rows="4" placeholder='{"apiKey":"...","authDomain":"...","projectId":"..."}'></textarea>
+        <p class="hint">Firebase 콘솔에서 웹 앱을 만들고 firebaseConfig JSON을 붙여넣으세요(README 참고). 저장 후 "로그인" 버튼으로 Google 계정 로그인을 하면 이후에는 자동으로 유지됩니다.</p>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <button id="fbLogin">☁️ 로그인</button>
+          <button id="fbLogout">로그아웃</button>
+          <span class="hint" id="fbStatus">동기화 꺼짐 (이 기기에만 저장)</span>
+        </div>
+      </div>
+      <hr style="border:0;border-top:1px solid var(--line);width:100%">
+      <div class="field">
+        <label>백업</label>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button id="exportBtn">내보내기(JSON)</button>
+          <button id="importBtn">가져오기</button>
+          <input type="file" id="importFile" accept="application/json" style="display:none">
+        </div>
+      </div>
+    </div>
+    <div class="foot"><button class="primary" id="settingsSave">저장</button></div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+/* ============================ 상태 ============================ */
+const LAYOUTS = [
+  {n:1, r:1, c:1, label:'1'},
+  {n:2, r:1, c:2, label:'2 (1×2)'},
+  {n:4, r:2, c:2, label:'4 (2×2)'},
+  {n:6, r:2, c:3, label:'6 (2×3)'},
+  {n:9, r:3, c:3, label:'9 (3×3)'},
+  {n:12,r:3, c:4, label:'12 (3×4)'},
+];
+const MAX = 12;
+const KEY = 'chzzk-mv-v1';
+
+const defaultState = () => ({
+  layout: 4,
+  panes: Array.from({length:MAX}, () => ({ channelId:null, focused:false, muted:false })),
+  channels: [],   // {channelId, channelName, channelImageUrl}
+  settings: { masterVol:100, focusVol:20, dim:30, preferLL:false, workerUrl:'', fbConfig:'' },
+  updatedAt: 0,
+});
+
+let S = load();
+function load(){
+  try{
+    const raw = localStorage.getItem(KEY);
+    if(!raw) return defaultState();
+    const d = defaultState(), p = JSON.parse(raw);
+    return { ...d, ...p, settings:{...d.settings, ...(p.settings||{})},
+      panes: Array.from({length:MAX}, (_,i)=> ({...d.panes[i], ...((p.panes||[])[i]||{})})) };
+  }catch{ return defaultState(); }
+}
+let saveTimer;
+function save(){
+  S.updatedAt = Date.now();
+  localStorage.setItem(KEY, JSON.stringify(S));
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(cloudPush, 800);
+}
+
+/* ============================ 유틸 ============================ */
+const $ = s => document.querySelector(s);
+const el = (tag, attrs={}, ...kids) => {
+  const e = document.createElement(tag);
+  for(const [k,v] of Object.entries(attrs)){
+    if(v==null || v===false) continue;
+    if(k==='class') e.className=v; else if(k.startsWith('on')) e.addEventListener(k.slice(2), v);
+    else if(k==='html') e.innerHTML=v; else e.setAttribute(k,v);
+  }
+  for(const k of kids) if(k!=null) e.append(k);
+  return e;
+};
+function toast(m, ms=2500){ const t=$('#toast'); t.textContent=m; t.classList.add('show'); clearTimeout(t._t); t._t=setTimeout(()=>t.classList.remove('show'), ms); }
+function openModal(id){ $('#'+id).classList.add('open'); }
+function closeModal(id){ $('#'+id).classList.remove('open'); }
+document.querySelectorAll('[data-close]').forEach(b=>b.onclick=()=>closeModal(b.dataset.close));
+document.querySelectorAll('.modal').forEach(m=>m.addEventListener('click', e=>{ if(e.target===m && m.id!=='shrinkModal') m.classList.remove('open'); }));
+
+const chanOf = id => S.channels.find(c=>c.channelId===id);
+const workerUrl = () => (S.settings.workerUrl||'').replace(/\/+$/,'');
+const isNativeHls = (()=>{ const v=document.createElement('video'); return !!v.canPlayType('application/vnd.apple.mpegurl') && !window.MediaSource; })();
+
+/* ============================ API ============================ */
+async function api(path){
+  if(!workerUrl()) throw new Error('중계 서버 주소가 설정되지 않았습니다 (설정 ⚙️)');
+  const r = await fetch(workerUrl()+path, {cache:'no-store'});
+  if(!r.ok) throw new Error('서버 오류 '+r.status);
+  return r.json();
+}
+function parseChannelInput(s){
+  s = s.trim();
+  const m = s.match(/chzzk\.naver\.com\/(?:live\/)?([0-9a-f]{32})/i) || s.match(/^([0-9a-f]{32})$/i);
+  return m ? m[1].toLowerCase() : null;
+}
+
+/* ============================ 플레이어 ============================ */
+const players = new Map(); // paneIndex -> {video, hls, timer, channelId}
+
+function destroyPlayer(i){
+  const p = players.get(i); if(!p) return;
+  clearTimeout(p.timer);
+  if(p.hls) { try{ p.hls.destroy(); }catch{} }
+  try{ p.video.pause(); p.video.removeAttribute('src'); p.video.load(); }catch{}
+  players.delete(i);
+}
+
+async function startPlayer(i, paneEl){
+  const pane = S.panes[i];
+  const video = paneEl.querySelector('video');
+  const msg = paneEl.querySelector('.msg');
+  const badge = paneEl.querySelector('.badge');
+  const ch = chanOf(pane.channelId) || {channelName: pane.channelId};
+  const p = { video, hls:null, timer:null, channelId: pane.channelId };
+  players.set(i, p);
+
+  const showMsg = (title, sub) => {
+    msg.classList.remove('hidden');
+    msg.innerHTML = '';
+    if(ch.channelImageUrl) msg.append(el('img',{src:ch.channelImageUrl, referrerpolicy:'no-referrer'}));
+    msg.append(el('b',{}, ch.channelName), el('span',{}, title));
+    if(sub) msg.append(el('span',{class:'hint'}, sub));
+  };
+  const retry = (ms) => { clearTimeout(p.timer); p.timer = setTimeout(()=>{ if(players.get(i)===p) startPlayer(i, gridPanes[i] || paneEl); }, ms); };
+
+  showMsg('불러오는 중…');
+  badge.innerHTML = ''; badge.append(ch.channelName);
+
+  let info;
+  try { info = await api('/live/'+pane.channelId); }
+  catch(e){ showMsg('연결 실패', e.message); retry(30000); return; }
+  if(players.get(i)!==p) return;
+
+  if(info.status!=='OPEN' || !(info.hls||info.llhls)){
+    showMsg(info.adult ? '성인 인증 필요 방송 (서버에 쿠키 설정 필요)' : '오프라인', '60초마다 다시 확인합니다');
+    retry(60000); return;
+  }
+  badge.innerHTML = ''; badge.append(el('span',{class:'live'},'LIVE'), (info.liveTitle||ch.channelName));
+  badge.title = info.liveTitle||'';
+
+  let src = (S.settings.preferLL && info.llhls) ? info.llhls : info.hls || info.llhls;
+
+  const onFatal = async () => {
+    if(players.get(i)!==p) return;
+    // CORS 등으로 직접 재생 실패 시 프록시 경유로 1회 재시도
+    if(!p.viaProxy){
+      p.viaProxy = true;
+      attach(workerUrl()+'/hls?url='+encodeURIComponent(src));
+    } else { showMsg('재생 오류', '15초 후 재시도'); retry(15000); }
+  };
+
+  const attach = (url) => {
+    if(p.hls){ try{p.hls.destroy();}catch{} p.hls=null; }
+    if(isNativeHls){
+      video.src = url;
+      video.onerror = onFatal;
+    } else if(window.Hls && Hls.isSupported()){
+      const hls = new Hls({ lowLatencyMode: !!(S.settings.preferLL), liveSyncDurationCount: 3, enableWorker:true, maxBufferLength: 20 });
+      p.hls = hls;
+      hls.loadSource(url); hls.attachMedia(video);
+      hls.on(Hls.Events.ERROR, (_, d) => {
+        if(!d.fatal) return;
+        if(d.type===Hls.ErrorTypes.NETWORK_ERROR && d.details!=='manifestLoadError'){ hls.startLoad(); return; }
+        if(d.type===Hls.ErrorTypes.MEDIA_ERROR){ hls.recoverMediaError(); return; }
+        onFatal();
+      });
+    } else { showMsg('이 브라우저는 HLS 재생을 지원하지 않습니다'); return; }
+    video.play().then(()=>{ msg.classList.add('hidden'); applyAudio(); })
+      .catch(()=>{ // 자동재생 차단: 음소거로 재시도
+        video.muted = true; $('#unmuteBtn').style.display='inline-block';
+        video.play().then(()=>msg.classList.add('hidden')).catch(()=>showMsg('재생을 시작하려면 화면을 터치하세요'));
+      });
+  };
+  attach(src);
+  video.addEventListener('playing', ()=>msg.classList.add('hidden'), {once:true});
+}
+
+/* 음량/밝기 적용 (주목 모드) */
+let audioUnlocked = false;
+function applyAudio(){
+  const anyFocus = S.panes.slice(0, S.layout).some(p=>p.channelId && p.focused);
+  const master = S.settings.masterVol/100, ratio = S.settings.focusVol/100;
+  document.documentElement.style.setProperty('--dim', S.settings.dim/100);
+  for(let i=0;i<S.layout;i++){
+    const pane = S.panes[i], pEl = gridPanes[i], pl = players.get(i);
+    if(!pEl) continue;
+    pEl.classList.toggle('focused', !!(pane.channelId && pane.focused));
+    pEl.classList.toggle('dimmed', anyFocus && !(pane.channelId && pane.focused));
+    if(pl){
+      const v = anyFocus && !pane.focused ? master*ratio : master;
+      pl.video.volume = Math.max(0, Math.min(1, v));
+      if(pane.muted) pl.video.muted = true;
+      else if(audioUnlocked) pl.video.muted = false;
+      const mb = pEl.querySelector('.ctl.mute'); if(mb) mb.textContent = pl.video.muted ? '🔇' : '🔊';
+    }
+  }
+}
+$('#unmuteBtn').onclick = () => {
+  audioUnlocked = true; $('#unmuteBtn').style.display='none';
+  players.forEach((p,i)=>{ if(!S.panes[i].muted){ p.video.muted=false; p.video.play().catch(()=>{}); } });
+  applyAudio();
+};
+// 데스크톱은 어떤 상호작용이든 한 번 있으면 소리 허용
+['pointerdown','keydown'].forEach(ev=>window.addEventListener(ev, ()=>{ if(!audioUnlocked){ audioUnlocked=true; $('#unmuteBtn').style.display='none'; applyAudio(); } }, {once:true, capture:true}));
+
+/* ============================ 그리드 렌더 ============================ */
+let gridPanes = [];
+function renderLayoutButtons(){
+  const box = $('#layoutBtns'); box.innerHTML='';
+  LAYOUTS.forEach(L => box.append(el('button',{class: L.n===S.layout?'active':'', onclick:()=>requestLayout(L.n)}, L.label)));
+}
+function renderGrid(){
+  const L = LAYOUTS.find(l=>l.n===S.layout);
+  const grid = $('#grid');
+  grid.style.gridTemplateRows = `repeat(${L.r},1fr)`;
+  grid.style.gridTemplateColumns = `repeat(${L.c},1fr)`;
+  // 레이아웃 밖 플레이어 정리
+  players.forEach((_,i)=>{ if(i>=S.layout) destroyPlayer(i); });
+  grid.innerHTML=''; gridPanes=[];
+  for(let i=0;i<S.layout;i++){
+    const pane = S.panes[i];
+    const pEl = el('div',{class:'pane', 'data-i':i});
+    if(!pane.channelId){
+      pEl.classList.add('empty');
+      pEl.append(el('div',{class:'nosign'},'🚫'));
+      pEl.onclick = () => openPicker(i);
+      destroyPlayer(i);
+    } else {
+      const video = el('video',{playsinline:'', 'webkit-playsinline':'', autoplay:'', preload:'auto'});
+      const tap = el('div',{class:'tap', onclick:(e)=>{ e.stopPropagation(); toggleFocus(i); }});
+      // 터치 기기: 컨트롤 표시 토글을 위해 pane 더블탭이 아닌 단일탭=주목, 길게 누르면 컨트롤
+      const closeBtn = el('button',{class:'ctl close', title:'채널 해제', onclick:(e)=>{ e.stopPropagation(); clearPane(i); }},'✕');
+      const fsBtn = el('button',{class:'ctl fs', title:'전체화면', onclick:(e)=>{ e.stopPropagation(); toggleFullscreen(i); }},'⛶');
+      const muteBtn = el('button',{class:'ctl mute', title:'이 화면 음소거', onclick:(e)=>{ e.stopPropagation(); pane.muted=!pane.muted; audioUnlocked=true; save(); applyAudio(); }}, pane.muted?'🔇':'🔊');
+      pEl.append(video, el('div',{class:'msg'}), tap, el('div',{class:'badge'}), el('div',{class:'focusTag'},'주목'), closeBtn, fsBtn, muteBtn);
+      // 채널이 바뀌었거나 플레이어 없으면 시작
+      const ex = players.get(i);
+      if(!ex || ex.channelId!==pane.channelId){ destroyPlayer(i); startPlayer(i, pEl); }
+      else { // 기존 비디오 재사용
+        pEl.replaceChild(ex.video, video);
+        if(ex.video.paused) ex.video.play().catch(()=>{});
+        pEl.querySelector('.msg').classList.add('hidden');
+        const b = pEl.querySelector('.badge'); b.textContent = (chanOf(pane.channelId)||{}).channelName||'';
+      }
+    }
+    grid.append(pEl); gridPanes.push(pEl);
+  }
+  renderLayoutButtons();
+  applyAudio();
+  updateStatus();
+}
+function updateStatus(){
+  const used = S.panes.slice(0,S.layout).filter(p=>p.channelId).length;
+  $('#status').textContent = `${used}/${S.layout} 사용 중 · 채널 ${S.channels.length}개` + (cloud.user ? ' · ☁️' : '');
+}
+
+/* ============================ 동작 ============================ */
+function toggleFocus(i){ S.panes[i].focused = !S.panes[i].focused; save(); applyAudio(); }
+function clearPane(i){ destroyPlayer(i); S.panes[i] = {channelId:null, focused:false, muted:false}; save(); renderGrid(); }
+function assignPane(i, channelId){
+  destroyPlayer(i);
+  S.panes[i] = {channelId, focused:false, muted:false}; save(); renderGrid();
+}
+
+function requestLayout(n){
+  if(n===S.layout) return;
+  const assigned = S.panes.map((p,i)=>({...p,i})).filter(p=>p.channelId);
+  const inRange = assigned.filter(p=>p.i < Math.max(n, S.layout));
+  if(n < S.layout && inRange.length > n){
+    openShrink(n, inRange);
+    return;
+  }
+  // 여유가 있으면 앞으로 당겨 채움
+  compactPanes(n);
+}
+function compactPanes(n, dropSet=new Set()){
+  const keep = S.panes.filter((p,i)=>p.channelId && !dropSet.has(i));
+  const fresh = Array.from({length:MAX}, () => ({channelId:null, focused:false, muted:false}));
+  keep.slice(0, MAX).forEach((p,k)=>fresh[k]=p);
+  // 플레이어 인덱스 재매핑
+  const oldPlayers = new Map(players); players.clear();
+  const remap = new Map();
+  let k=0; S.panes.forEach((p,i)=>{ if(p.channelId && !dropSet.has(i)) remap.set(i, k++); });
+  oldPlayers.forEach((pl,i)=>{ if(remap.has(i) && remap.get(i)<n) players.set(remap.get(i), pl); else { clearTimeout(pl.timer); if(pl.hls) try{pl.hls.destroy();}catch{}; try{pl.video.pause();}catch{} } });
+  S.panes = fresh; S.layout = n; save(); renderGrid();
+}
+
+/* 축소 모달 */
+let shrinkCtx = null;
+function openShrink(n, inRange){
+  const mustDrop = inRange.length - n;
+  shrinkCtx = { n, drop:new Set(), mustDrop };
+  $('#shrinkHint').textContent = `${S.layout}분할 → ${n}분할로 줄이려면 ${mustDrop}개 화면을 닫아야 합니다. 닫을 화면을 선택하세요.`;
+  const list = $('#shrinkList'); list.innerHTML='';
+  inRange.forEach(p=>{
+    const ch = chanOf(p.channelId)||{channelName:p.channelId};
+    const row = el('div',{class:'row clickable'},
+      el('img',{src:ch.channelImageUrl||'', referrerpolicy:'no-referrer'}),
+      el('div',{class:'name'}, ch.channelName, el('small',{}, `${p.i+1}번 화면` + (p.focused?' · 주목 중':''))),
+      el('span',{class:'hint'}, '닫기 선택'));
+    row.onclick = () => {
+      if(shrinkCtx.drop.has(p.i)) shrinkCtx.drop.delete(p.i);
+      else if(shrinkCtx.drop.size < mustDrop) shrinkCtx.drop.add(p.i);
+      else { toast(`${mustDrop}개만 선택할 수 있습니다`); return; }
+      row.classList.toggle('selected', shrinkCtx.drop.has(p.i));
+      $('#shrinkOk').disabled = shrinkCtx.drop.size !== mustDrop;
+      $('#shrinkOk').textContent = `적용 (${shrinkCtx.drop.size}/${mustDrop})`;
+    };
+    list.append(row);
+  });
+  $('#shrinkOk').disabled = true; $('#shrinkOk').textContent = `적용 (0/${mustDrop})`;
+  openModal('shrinkModal');
+}
+$('#shrinkCancel').onclick = () => { closeModal('shrinkModal'); shrinkCtx=null; };
+$('#shrinkOk').onclick = () => { if(!shrinkCtx) return; shrinkCtx.drop.forEach(i=>destroyPlayer(i)); compactPanes(shrinkCtx.n, shrinkCtx.drop); closeModal('shrinkModal'); shrinkCtx=null; };
+
+/* 전체화면 */
+function toggleFullscreen(i){
+  const pEl = gridPanes[i]; if(!pEl) return;
+  const fsEl = document.fullscreenElement || document.webkitFullscreenElement;
+  if(pEl.classList.contains('pseudo-fs')){ pEl.classList.remove('pseudo-fs'); pEl.querySelector('.ctl.fs').textContent='⛶'; return; }
+  if(fsEl){ (document.exitFullscreen||document.webkitExitFullscreen).call(document); return; }
+  const req = pEl.requestFullscreen || pEl.webkitRequestFullscreen;
+  if(req){ req.call(pEl).catch(()=>pEl.classList.add('pseudo-fs')); }
+  else pEl.classList.add('pseudo-fs');
+  pEl.querySelector('.ctl.fs').textContent='🗗';
+}
+document.addEventListener('fullscreenchange', onFsChange); document.addEventListener('webkitfullscreenchange', onFsChange);
+function onFsChange(){
+  const fsEl = document.fullscreenElement || document.webkitFullscreenElement;
+  gridPanes.forEach(p=>{ const b=p.querySelector('.ctl.fs'); if(b) b.textContent = (p===fsEl)?'🗗':'⛶'; });
+  applyAudio(); // 주목모드 등 상태는 S에 보존되어 있으므로 그대로 복원
+}
+document.addEventListener('keydown', e=>{ if(e.key==='Escape') gridPanes.forEach(p=>p.classList.remove('pseudo-fs')); });
+
+/* ============================ 채널 목록 / 검색 ============================ */
+let pickerTarget = null; // 분할 번호(선택 모드) 또는 null(관리 모드)
+function openPicker(i){ pickerTarget = i; $('#libTitle').textContent = `${i+1}번 화면에 넣을 채널 선택`; showTab('list'); openModal('libModal'); }
+$('#libBtn').onclick = () => { pickerTarget=null; $('#libTitle').textContent='채널 목록'; showTab('list'); openModal('libModal'); };
+$('#tabList').onclick = ()=>showTab('list'); $('#tabSearch').onclick = ()=>showTab('search');
+function showTab(t){
+  $('#tabList').classList.toggle('active', t==='list'); $('#tabSearch').classList.toggle('active', t==='search');
+  $('#libList').style.display = t==='list'?'':'none'; $('#libSearch').style.display = t==='search'?'block':'none';
+  if(t==='list') renderLib(); else { $('#searchHint').textContent = workerUrl() ? '채널명으로 검색하거나, 치지직 채널 주소를 붙여넣으세요.' : '중계 서버가 없어 검색은 불가합니다. 채널 주소(https://chzzk.naver.com/채널ID)를 붙여넣으면 추가됩니다.'; setTimeout(()=>$('#searchInput').focus(),50); }
+}
+function renderLib(){
+  const list = $('#libList'); list.innerHTML='';
+  if(!S.channels.length){ list.append(el('div',{class:'empty-note'}, '채널이 없습니다. "검색 / 추가" 탭에서 채널을 추가하세요.')); return; }
+  S.channels.forEach(ch=>{
+    const inUse = S.panes.slice(0,S.layout).findIndex(p=>p.channelId===ch.channelId);
+    const row = el('div',{class:'row'+(pickerTarget!=null?' clickable':'')},
+      el('img',{src:ch.channelImageUrl||'', referrerpolicy:'no-referrer'}),
+      el('div',{class:'name'}, ch.channelName, el('small',{}, inUse>=0 ? `${inUse+1}번 화면에서 시청 중` : ch.channelId)));
+    if(pickerTarget!=null){
+      row.onclick = () => { assignPane(pickerTarget, ch.channelId); closeModal('libModal'); };
+    } else {
+      const emptyIdx = S.panes.slice(0,S.layout).findIndex(p=>!p.channelId);
+      if(emptyIdx>=0) row.append(el('button',{onclick:()=>{ assignPane(emptyIdx, ch.channelId); renderLib(); toast(`${emptyIdx+1}번 화면에 추가`); }}, '▶ 보기'));
+    }
+    row.append(el('button',{class:'danger', title:'목록에서 삭제', onclick:(e)=>{ e.stopPropagation(); removeChannel(ch.channelId); }},'🗑'));
+    list.append(row);
+  });
+}
+function addChannel(ch){
+  if(chanOf(ch.channelId)){ toast('이미 목록에 있습니다'); return; }
+  S.channels.push({channelId:ch.channelId, channelName:ch.channelName, channelImageUrl:ch.channelImageUrl||''});
+  save(); updateStatus(); toast(`'${ch.channelName}' 추가됨`);
+}
+function removeChannel(id){
+  if(!confirm('이 채널을 목록에서 삭제할까요? (시청 중인 화면도 해제됩니다)')) return;
+  S.channels = S.channels.filter(c=>c.channelId!==id);
+  S.panes.forEach((p,i)=>{ if(p.channelId===id){ destroyPlayer(i); S.panes[i]={channelId:null,focused:false,muted:false}; } });
+  save(); renderGrid(); renderLib();
+}
+async function doSearch(){
+  const q = $('#searchInput').value.trim(); if(!q) return;
+  const res = $('#searchResults'); res.innerHTML = '';
+  const id = parseChannelInput(q);
+  if(id){
+    let ch = {channelId:id, channelName:id, channelImageUrl:''};
+    if(workerUrl()){ try{ const r = await api('/channel/'+id); if(r.channelId) ch = r; }catch{} }
+    addChannel(ch); renderLib(); showTab('list'); return;
+  }
+  if(!workerUrl()){ toast('검색하려면 설정에서 중계 서버 주소를 입력하세요'); return; }
+  res.append(el('div',{class:'empty-note'},'검색 중…'));
+  try{
+    const r = await api('/search?q='+encodeURIComponent(q));
+    res.innerHTML='';
+    if(!r.data?.length){ res.append(el('div',{class:'empty-note'},'결과가 없습니다')); return; }
+    r.data.forEach(ch=>{
+      const has = !!chanOf(ch.channelId);
+      res.append(el('div',{class:'row'},
+        el('img',{src:ch.channelImageUrl||'', referrerpolicy:'no-referrer'}),
+        el('span',{class:'on'+(ch.openLive?' live':''), title: ch.openLive?'방송 중':'오프라인'}),
+        el('div',{class:'name'}, ch.channelName + (ch.verified?' ✔':''), el('small',{}, ch.followerCount!=null ? `팔로워 ${ch.followerCount.toLocaleString()}` : ch.channelId)),
+        el('button',{class: has?'':'primary', disabled: has?'':null, onclick:(e)=>{ const b=e.currentTarget; addChannel(ch); b.textContent='추가됨'; b.disabled=true; b.classList.remove('primary'); if(pickerTarget!=null){ assignPane(pickerTarget, ch.channelId); closeModal('libModal'); } }}, has?'추가됨':'+ 추가')));
+    });
+  }catch(e){ res.innerHTML=''; res.append(el('div',{class:'empty-note'}, '검색 실패: '+e.message)); }
+}
+$('#searchBtn').onclick = doSearch;
+$('#searchInput').addEventListener('keydown', e=>{ if(e.key==='Enter') doSearch(); });
+
+/* ============================ 설정 ============================ */
+$('#settingsBtn').onclick = () => {
+  const s = S.settings;
+  $('#masterVol').value=s.masterVol; $('#focusVol').value=s.focusVol; $('#dim').value=s.dim; $('#preferLL').checked=!!s.preferLL;
+  $('#workerUrl').value=s.workerUrl||''; $('#fbConfig').value=s.fbConfig||'';
+  syncSettingLabels(); openModal('settingsModal');
+};
+function syncSettingLabels(){
+  $('#masterVolVal').textContent=$('#masterVol').value+'%'; $('#focusVolVal').textContent=$('#focusVol').value+'%'; $('#dimVal').textContent=$('#dim').value+'%';
+}
+['masterVol','focusVol','dim'].forEach(id=>$('#'+id).addEventListener('input', ()=>{ syncSettingLabels();
+  // 실시간 미리보기
+  S.settings[id] = +$('#'+id).value; applyAudio(); }));
+$('#settingsSave').onclick = () => {
+  const prevWorker = S.settings.workerUrl, prevFb = S.settings.fbConfig;
+  S.settings = { masterVol:+$('#masterVol').value, focusVol:+$('#focusVol').value, dim:+$('#dim').value, preferLL:$('#preferLL').checked,
+    workerUrl:$('#workerUrl').value.trim(), fbConfig:$('#fbConfig').value.trim() };
+  save(); applyAudio(); closeModal('settingsModal'); toast('저장되었습니다');
+  if(prevWorker!==S.settings.workerUrl){ players.forEach((_,i)=>destroyPlayer(i)); renderGrid(); }
+  if(prevFb!==S.settings.fbConfig) initCloud();
+};
+$('#exportBtn').onclick = () => {
+  const blob = new Blob([JSON.stringify({channels:S.channels, settings:{...S.settings, fbConfig:undefined}, layout:S.layout, panes:S.panes}, null, 2)], {type:'application/json'});
+  const a = el('a',{href:URL.createObjectURL(blob), download:'chzzk-multiview-backup.json'}); a.click();
+};
+$('#importBtn').onclick = () => $('#importFile').click();
+$('#importFile').onchange = async (e) => {
+  const f = e.target.files[0]; if(!f) return;
+  try{ const d = JSON.parse(await f.text());
+    if(Array.isArray(d.channels)) d.channels.forEach(c=>{ if(c.channelId && !chanOf(c.channelId)) S.channels.push(c); });
+    if(d.settings) S.settings = {...S.settings, ...d.settings, fbConfig:S.settings.fbConfig};
+    save(); renderGrid(); toast('가져오기 완료');
+  }catch{ toast('파일을 읽을 수 없습니다'); }
+  e.target.value='';
+};
+
+/* ============================ 클라우드 동기화 (Firebase, 선택) ============================ */
+const cloud = { app:null, auth:null, db:null, user:null, ready:false, unsub:null };
+function loadScript(src){ return new Promise((res,rej)=>{ const s=document.createElement('script'); s.src=src; s.onload=res; s.onerror=rej; document.head.append(s); }); }
+async function initCloud(){
+  const cfgStr = S.settings.fbConfig; const st = $('#fbStatus');
+  if(cloud.unsub){ cloud.unsub(); cloud.unsub=null; }
+  if(!cfgStr){ st.textContent='동기화 꺼짐 (이 기기에만 저장)'; cloud.user=null; updateStatus(); return; }
+  let cfg; try{ cfg = JSON.parse(cfgStr); }catch{ st.textContent='Firebase 설정 JSON 형식 오류'; return; }
+  try{
+    if(!window.firebase){
+      const v='10.12.5';
+      await loadScript(`https://www.gstatic.com/firebasejs/${v}/firebase-app-compat.js`);
+      await loadScript(`https://www.gstatic.com/firebasejs/${v}/firebase-auth-compat.js`);
+      await loadScript(`https://www.gstatic.com/firebasejs/${v}/firebase-firestore-compat.js`);
+    }
+    if(!cloud.app) cloud.app = firebase.initializeApp(cfg);
+    cloud.auth = firebase.auth(); cloud.db = firebase.firestore(); cloud.ready=true;
+    await cloud.auth.setPersistence(firebase.auth.Auth.Persistence.LOCAL);
+    // 모바일 리디렉션 로그인 결과 처리
+    try{ await cloud.auth.getRedirectResult(); }catch(e){ if(e.code && e.code!=='auth/no-auth-event') toast('로그인 오류: '+e.message); }
+    cloud.auth.onAuthStateChanged(u => {
+      cloud.user = u; updateStatus();
+      st.textContent = u ? `☁️ ${u.email||u.displayName} 로 동기화 중` : '로그인하면 기기 간 동기화됩니다';
+      if(u) subscribeCloud(); else if(cloud.unsub){ cloud.unsub(); cloud.unsub=null; }
+    });
+  }catch(e){ st.textContent='Firebase 초기화 실패: '+e.message; }
+}
+function docRef(){ return cloud.db.collection('multiview').doc(cloud.user.uid); }
+function subscribeCloud(){
+  if(cloud.unsub) cloud.unsub();
+  cloud.unsub = docRef().onSnapshot(snap => {
+    if(!snap.exists){ cloudPush(true); return; }
+    const d = snap.data();
+    if(d.updatedAt > (S.updatedAt||0)){ // 원격이 더 최신이면 반영
+      S.channels = d.channels||S.channels;
+      if(d.settings) S.settings = {...S.settings, ...d.settings, workerUrl: d.settings.workerUrl || S.settings.workerUrl, fbConfig:S.settings.fbConfig};
+      if(d.layout) S.layout = d.layout;
+      if(Array.isArray(d.panes)) S.panes = Array.from({length:MAX},(_,i)=>({channelId:null,focused:false,muted:false, ...(d.panes[i]||{})}));
+      S.updatedAt = d.updatedAt; localStorage.setItem(KEY, JSON.stringify(S));
+      renderGrid(); if($('#libModal').classList.contains('open')) renderLib();
+      toast('☁️ 클라우드에서 설정을 불러왔습니다');
+    }
+  }, err => { $('#fbStatus').textContent='동기화 오류: '+err.message; });
+}
+async function cloudPush(force){
+  if(!cloud.user || !cloud.db) return;
+  try{ await docRef().set({ channels:S.channels, settings:{...S.settings, fbConfig:firebase.firestore.FieldValue.delete()}, layout:S.layout, panes:S.panes, updatedAt: S.updatedAt||Date.now() }, {merge:true}); }
+  catch(e){ console.warn('cloud push', e); }
+}
+$('#fbLogin').onclick = async () => {
+  if(!cloud.ready){ toast('먼저 Firebase 설정을 입력하고 저장하세요'); return; }
+  const provider = new firebase.auth.GoogleAuthProvider();
+  const mobile = /iPhone|iPad|Android/i.test(navigator.userAgent);
+  try{ if(mobile) await cloud.auth.signInWithRedirect(provider); else await cloud.auth.signInWithPopup(provider); }
+  catch(e){ toast('로그인 실패: '+e.message); }
+};
+$('#fbLogout').onclick = async () => { if(cloud.auth){ await cloud.auth.signOut(); toast('로그아웃'); } };
+
+/* ============================ 시작 ============================ */
+renderGrid();
+initCloud();
+if(!workerUrl()) setTimeout(()=>toast('⚙️ 설정에서 중계 서버 주소를 입력하면 검색·재생이 활성화됩니다', 5000), 600);
+// 탭 복귀 시 멈춘 영상 재개
+document.addEventListener('visibilitychange', ()=>{ if(!document.hidden) players.forEach(p=>{ if(p.video.paused) p.video.play().catch(()=>{}); }); });
+</script>
+</body>
+</html>
