@@ -6,7 +6,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="theme-color" content="#0f0f12">
-<title>치지직 멀티뷰</title>
+<title>치지직 멀티뷰 · v3</title>
 <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.15/dist/hls.min.js"></script>
 <style>
   :root{
@@ -148,6 +148,10 @@
   <div class="box">
     <h3>설정<button data-close="settingsModal">✕</button></h3>
     <div class="body">
+      <div class="field"><label for="quality">재생 화질 (전체 화면 공통)</label>
+        <select id="quality"><option value="auto">자동 (대역폭에 따라 선택)</option><option value="best">최고 화질</option><option value="1080">1080p</option><option value="720">720p</option><option value="480">480p</option><option value="360">360p</option><option value="240">240p</option></select>
+        <p class="hint">선택 해상도 이하 중 가장 높은 화질을 사용합니다. 화면 수에 따른 자동 제한은 없습니다. iOS 네이티브 재생에서는 브라우저가 화질을 결정합니다.</p>
+      </div>
       <div class="field">
         <label>전체 음량 <span class="val" id="masterVolVal"></span></label>
         <input type="range" id="masterVol" min="0" max="100" step="1">
@@ -215,7 +219,7 @@ const defaultState = () => ({
   layout: 4,
   panes: Array.from({length:MAX}, () => ({ channelId:null, focused:false, muted:false })),
   channels: [],   // {channelId, channelName, channelImageUrl}
-  settings: { masterVol:100, focusVol:20, dim:30, preferLL:false, workerUrl:'', fbConfig:'' },
+  settings: { masterVol:100, focusVol:20, dim:30, quality:'auto', preferLL:false, workerUrl:'', fbConfig:'' },
   updatedAt: 0,
 });
 
@@ -278,12 +282,15 @@ const players = new Map(); // paneIndex -> {video, hls, timer, channelId}
 function destroyPlayer(i){
   const p = players.get(i); if(!p) return;
   clearTimeout(p.timer);
+  clearInterval(p.watchdog);
+  p.video.onerror = null;
   if(p.hls) { try{ p.hls.destroy(); }catch{} }
   try{ p.video.pause(); p.video.removeAttribute('src'); p.video.load(); }catch{}
   players.delete(i);
 }
 
 async function startPlayer(i, paneEl){
+  destroyPlayer(i); // 재연결 전 기존 HLS·타이머·영상 자원을 반드시 정리
   const pane = S.panes[i];
   const video = paneEl.querySelector('video');
   const msg = paneEl.querySelector('.msg');
@@ -333,13 +340,25 @@ async function startPlayer(i, paneEl){
       video.src = url;
       video.onerror = onFatal;
     } else if(window.Hls && Hls.isSupported()){
-      const hls = new Hls({ lowLatencyMode: !!(S.settings.preferLL), liveSyncDurationCount: 3, enableWorker:true, maxBufferLength: 20 });
+      const count = S.panes.slice(0,S.layout).filter(x=>x.channelId).length;
+      const hls = new Hls({
+        lowLatencyMode: !!S.settings.preferLL,
+        liveSyncDurationCount: 3, enableWorker:true,
+        startLevel: 0, capLevelToPlayerSize: false,
+        maxBufferLength: 6, maxMaxBufferLength: 12,
+        backBufferLength: 2, maxBufferSize: 12*1024*1024,
+        abrEwmaDefaultEstimate: 500000
+      });
       p.hls = hls;
+      hls.on(Hls.Events.MANIFEST_PARSED, () => {
+        limitPlayerQuality();
+        video.play().catch(()=>{});
+      });
       hls.loadSource(url); hls.attachMedia(video);
       hls.on(Hls.Events.ERROR, (_, d) => {
         if(!d.fatal) return;
-        if(d.type===Hls.ErrorTypes.NETWORK_ERROR && d.details!=='manifestLoadError'){ hls.startLoad(); return; }
-        if(d.type===Hls.ErrorTypes.MEDIA_ERROR){ hls.recoverMediaError(); return; }
+        if(d.type===Hls.ErrorTypes.NETWORK_ERROR && d.details!=='manifestLoadError' && (p.networkRetries=(p.networkRetries||0)+1)<=2){ hls.startLoad(); return; }
+        if(d.type===Hls.ErrorTypes.MEDIA_ERROR && (p.mediaRetries=(p.mediaRetries||0)+1)<=2){ hls.recoverMediaError(); return; }
         onFatal();
       });
     } else { showMsg('이 브라우저는 HLS 재생을 지원하지 않습니다'); return; }
@@ -350,7 +369,37 @@ async function startPlayer(i, paneEl){
       });
   };
   attach(src);
+  let lastTime = -1, stalledTicks = 0;
+  p.watchdog = setInterval(()=>{
+    if(players.get(i)!==p || document.hidden) return;
+    if(video.currentTime > lastTime + 0.05) stalledTicks=0;
+    else stalledTicks++;
+    lastTime=video.currentTime;
+    if(stalledTicks===3 && video.buffered.length){
+      const end=video.buffered.end(video.buffered.length-1);
+      if(end-video.currentTime>3) video.currentTime=Math.max(0,end-2);
+      video.play().catch(()=>{});
+    }
+    if(stalledTicks>=6){ clearInterval(p.watchdog); retry(1000+Math.random()*4000); }
+  },5000);
   video.addEventListener('playing', ()=>msg.classList.add('hidden'), {once:true});
+}
+
+
+// 화질은 사용자가 지정하며 화면 수로 제한하지 않습니다.
+function limitPlayerQuality(){
+  const setting=S.settings.quality||'auto';
+  players.forEach(p=>{
+    const h=p.hls;
+    if(!h || !h.levels?.length) return;
+    h.autoLevelCapping=-1;
+    if(setting==='auto'){ h.currentLevel=-1; return; }
+    const levels=h.levels.map((l,i)=>({l,i}));
+    const eligible=setting==='best'?levels:levels.filter(x=>x.l.height && x.l.height<=Number(setting));
+    const pool=eligible.length?eligible:levels;
+    const chosen=pool.reduce((a,b)=> eligible.length ? ((a.l.bitrate||0)>(b.l.bitrate||0)?a:b) : ((a.l.bitrate||Infinity)<(b.l.bitrate||Infinity)?a:b)).i;
+    h.currentLevel=chosen;
+  });
 }
 
 /* 음량/밝기 적용 (주목 모드) */
@@ -394,9 +443,16 @@ function renderGrid(){
   grid.style.gridTemplateColumns = `repeat(${L.c},1fr)`;
   // 레이아웃 밖 플레이어 정리
   players.forEach((_,i)=>{ if(i>=S.layout) destroyPlayer(i); });
-  grid.innerHTML=''; gridPanes=[];
+  const previousPanes = gridPanes;
+  gridPanes=[];
   for(let i=0;i<S.layout;i++){
     const pane = S.panes[i];
+    const current = players.get(i);
+    const existing = previousPanes[i];
+    if(pane.channelId && current && current.channelId===pane.channelId && existing && existing.querySelector('video')===current.video && existing.parentNode===grid){
+      gridPanes.push(existing);
+      continue;
+    }
     const pEl = el('div',{class:'pane', 'data-i':i});
     if(!pane.channelId){
       pEl.classList.add('empty');
@@ -421,8 +477,11 @@ function renderGrid(){
         const b = pEl.querySelector('.badge'); b.textContent = (chanOf(pane.channelId)||{}).channelName||'';
       }
     }
-    grid.append(pEl); gridPanes.push(pEl);
+    if(grid.children[i]) grid.replaceChild(pEl,grid.children[i]); else grid.append(pEl);
+    gridPanes.push(pEl);
   }
+  while(grid.children.length>S.layout) grid.lastElementChild.remove();
+  limitPlayerQuality();
   renderLayoutButtons();
   applyAudio();
   updateStatus();
@@ -455,11 +514,8 @@ function compactPanes(n, dropSet=new Set()){
   const keep = S.panes.filter((p,i)=>p.channelId && !dropSet.has(i));
   const fresh = Array.from({length:MAX}, () => ({channelId:null, focused:false, muted:false}));
   keep.slice(0, MAX).forEach((p,k)=>fresh[k]=p);
-  // 플레이어 인덱스 재매핑
-  const oldPlayers = new Map(players); players.clear();
-  const remap = new Map();
-  let k=0; S.panes.forEach((p,i)=>{ if(p.channelId && !dropSet.has(i)) remap.set(i, k++); });
-  oldPlayers.forEach((pl,i)=>{ if(remap.has(i) && remap.get(i)<n) players.set(remap.get(i), pl); else { clearTimeout(pl.timer); if(pl.hls) try{pl.hls.destroy();}catch{}; try{pl.video.pause();}catch{} } });
+  // 콜백이 이전 화면 번호를 참조하지 않도록 재구성 시 완전히 해제
+  [...players.keys()].forEach(destroyPlayer);
   S.panes = fresh; S.layout = n; save(); renderGrid();
 }
 
@@ -519,16 +575,42 @@ $('#tabList').onclick = ()=>showTab('list'); $('#tabSearch').onclick = ()=>showT
 function showTab(t){
   $('#tabList').classList.toggle('active', t==='list'); $('#tabSearch').classList.toggle('active', t==='search');
   $('#libList').style.display = t==='list'?'':'none'; $('#libSearch').style.display = t==='search'?'block':'none';
-  if(t==='list') renderLib(); else { $('#searchHint').textContent = workerUrl() ? '채널명으로 검색하거나, 치지직 채널 주소를 붙여넣으세요.' : '중계 서버가 없어 검색은 불가합니다. 채널 주소(https://chzzk.naver.com/채널ID)를 붙여넣으면 추가됩니다.'; setTimeout(()=>$('#searchInput').focus(),50); }
+  if(t==='list'){ renderLib(); refreshLiveStates(); } else { $('#searchHint').textContent = workerUrl() ? '채널명으로 검색하거나, 치지직 채널 주소를 붙여넣으세요.' : '중계 서버가 없어 검색은 불가합니다. 채널 주소(https://chzzk.naver.com/채널ID)를 붙여넣으면 추가됩니다.'; setTimeout(()=>$('#searchInput').focus(),50); }
 }
+const liveStates=new Map();
+let checkingLive=false;
+async function refreshLiveStates(){
+  if(checkingLive || !workerUrl()) return;
+  checkingLive=true;
+  const pending=S.channels.filter(ch=>Date.now()-(liveStates.get(ch.channelId)?.at||0)>60000);
+  let cursor=0;
+  const base=workerUrl();
+  try{
+    await Promise.all(Array.from({length:Math.min(3,pending.length)},async()=>{
+      while(cursor<pending.length){
+        const ch=pending[cursor++];
+        const controller=new AbortController();
+        const timer=setTimeout(()=>controller.abort(),10000);
+        try{
+          const r=await fetch(base+'/live/'+ch.channelId,{cache:'no-store',signal:controller.signal});
+          if(!r.ok) throw Error(r.status);
+          const data=await r.json();
+          liveStates.set(ch.channelId,{open:data.status==='OPEN',at:Date.now()});
+        }catch{ liveStates.set(ch.channelId,{open:null,at:Date.now()}); }
+        finally{ clearTimeout(timer); }
+      }
+    }));
+  }finally{ checkingLive=false; if($('#libModal').classList.contains('open')) renderLib(); }
+}
+setInterval(()=>{ if($('#libModal').classList.contains('open') && $('#libList').style.display!=='none') refreshLiveStates(); },60000);
 function renderLib(){
   const list = $('#libList'); list.innerHTML='';
   if(!S.channels.length){ list.append(el('div',{class:'empty-note'}, '채널이 없습니다. "검색 / 추가" 탭에서 채널을 추가하세요.')); return; }
-  S.channels.forEach(ch=>{
+  [...S.channels].sort((a,b)=>Number(liveStates.get(b.channelId)?.open===true)-Number(liveStates.get(a.channelId)?.open===true)).forEach(ch=>{
     const inUse = S.panes.slice(0,S.layout).findIndex(p=>p.channelId===ch.channelId);
     const row = el('div',{class:'row'+(pickerTarget!=null?' clickable':'')},
       el('img',{src:ch.channelImageUrl||'', referrerpolicy:'no-referrer'}),
-      el('div',{class:'name'}, ch.channelName, el('small',{}, inUse>=0 ? `${inUse+1}번 화면에서 시청 중` : ch.channelId)));
+      el('div',{class:'name'}, ch.channelName, el('small',{style:liveStates.get(ch.channelId)?.open?'color:#00ffa3':''}, liveStates.get(ch.channelId)?.open===true?'● LIVE · 방송 중':liveStates.get(ch.channelId)?.open===false?'오프라인':'방송 상태 확인 전'), el('small',{}, inUse>=0 ? `${inUse+1}번 화면에서 시청 중` : ch.channelId)));
     if(pickerTarget!=null){
       row.onclick = () => { assignPane(pickerTarget, ch.channelId); closeModal('libModal'); };
     } else {
@@ -581,6 +663,7 @@ $('#searchInput').addEventListener('keydown', e=>{ if(e.key==='Enter') doSearch(
 /* ============================ 설정 ============================ */
 $('#settingsBtn').onclick = () => {
   const s = S.settings;
+  $('#quality').value=s.quality||'auto';
   $('#masterVol').value=s.masterVol; $('#focusVol').value=s.focusVol; $('#dim').value=s.dim; $('#preferLL').checked=!!s.preferLL;
   $('#workerUrl').value=s.workerUrl||''; $('#fbConfig').value=s.fbConfig||'';
   syncSettingLabels(); openModal('settingsModal');
@@ -593,9 +676,9 @@ function syncSettingLabels(){
   S.settings[id] = +$('#'+id).value; applyAudio(); }));
 $('#settingsSave').onclick = () => {
   const prevWorker = S.settings.workerUrl, prevFb = S.settings.fbConfig;
-  S.settings = { masterVol:+$('#masterVol').value, focusVol:+$('#focusVol').value, dim:+$('#dim').value, preferLL:$('#preferLL').checked,
+  S.settings = { quality:$('#quality').value, masterVol:+$('#masterVol').value, focusVol:+$('#focusVol').value, dim:+$('#dim').value, preferLL:$('#preferLL').checked,
     workerUrl:$('#workerUrl').value.trim(), fbConfig:$('#fbConfig').value.trim() };
-  save(); applyAudio(); closeModal('settingsModal'); toast('저장되었습니다');
+  save(); applyAudio(); limitPlayerQuality(); closeModal('settingsModal'); toast('저장되었습니다');
   if(prevWorker!==S.settings.workerUrl){ players.forEach((_,i)=>destroyPlayer(i)); renderGrid(); }
   if(prevFb!==S.settings.fbConfig) initCloud();
 };
